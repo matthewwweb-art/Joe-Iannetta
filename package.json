@@ -1,5 +1,17 @@
 {
+  "name": "joe-iannetta",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start"
+  },
   "dependencies": {
-    "square": "^44.0.1"
+    "@supabase/supabase-js": "^2.49.8",
+    "next": "^16.1.6",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "square": "^43.1.0"
   }
 }
