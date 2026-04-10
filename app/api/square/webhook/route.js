@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { WebhooksHelper } from "square";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
 
 export const dynamic = "force-dynamic";
 
