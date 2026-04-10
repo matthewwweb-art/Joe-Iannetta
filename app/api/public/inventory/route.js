@@ -1,6 +1,20 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+};
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: CORS_HEADERS,
+  });
+}
+
 export async function GET() {
   const { data, error } = await supabaseAdmin
     .from("service_inventory")
@@ -11,7 +25,7 @@ export async function GET() {
   if (error) {
     return NextResponse.json(
       { ok: false, error: error.message },
-      { status: 500 }
+      { status: 500, headers: CORS_HEADERS }
     );
   }
 
@@ -34,9 +48,7 @@ export async function GET() {
     },
     {
       status: 200,
-      headers: {
-        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-      },
+      headers: CORS_HEADERS,
     }
   );
 }
