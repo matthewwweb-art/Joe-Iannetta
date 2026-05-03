@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { WebhooksHelper } from "square";
-import { supabaseAdmin } from "../../../../lib/supabaseAdmin";
+import { getPool } from "../../../../lib/neonDb";
 
 export const dynamic = "force-dynamic";
 
@@ -33,55 +33,65 @@ async function getSquareOrder(orderId) {
 }
 
 async function alreadyProcessed(squarePaymentId) {
-  const { data, error } = await supabaseAdmin
-    .from("square_processed_payments")
-    .select("id")
-    .eq("square_payment_id", squarePaymentId)
-    .maybeSingle();
+  const pool = getPool();
 
-  if (error) throw error;
-  return !!data;
+  const result = await pool.query(
+    `select id from square_processed_payments where square_payment_id = $1 limit 1`,
+    [squarePaymentId]
+  );
+
+  return result.rows.length > 0;
 }
 
 async function markProcessed(squarePaymentId, squareOrderId, payload) {
-  const { error } = await supabaseAdmin
-    .from("square_processed_payments")
-    .insert({
-      square_payment_id: squarePaymentId,
-      square_order_id: squareOrderId || null,
-      payload,
-    });
+  const pool = getPool();
 
-  if (error) throw error;
+  await pool.query(
+    `
+    insert into square_processed_payments (
+      square_payment_id,
+      square_order_id,
+      payload
+    )
+    values ($1, $2, $3::jsonb)
+    on conflict (square_payment_id) do nothing
+    `,
+    [squarePaymentId, squareOrderId || null, JSON.stringify(payload)]
+  );
 }
 
 async function loadServices() {
-  const { data, error } = await supabaseAdmin
-    .from("service_inventory")
-    .select("id, service_key, service_name, square_catalog_object_id, remaining_slots")
-    .eq("is_active", true);
+  const pool = getPool();
 
-  if (error) throw error;
-  return data || [];
+  const result = await pool.query(
+    `
+    select
+      id,
+      service_key,
+      service_name,
+      square_catalog_object_id,
+      remaining_slots
+    from service_inventory
+    where is_active = true
+    `
+  );
+
+  return result.rows || [];
 }
 
 async function decrementService(serviceId, quantity) {
-  const { data: current, error: readError } = await supabaseAdmin
-    .from("service_inventory")
-    .select("remaining_slots")
-    .eq("id", serviceId)
-    .single();
+  const pool = getPool();
 
-  if (readError) throw readError;
-
-  const nextRemaining = Math.max(0, (current?.remaining_slots || 0) - quantity);
-
-  const { error: updateError } = await supabaseAdmin
-    .from("service_inventory")
-    .update({ remaining_slots: nextRemaining })
-    .eq("id", serviceId);
-
-  if (updateError) throw updateError;
+  await pool.query(
+    `
+    update service_inventory
+    set
+      remaining_slots = greatest(0, remaining_slots - $2),
+      updated_at = now()
+    where id = $1
+    `,
+    [serviceId, quantity]
+  );
 }
 
 function findMatchingService(lineItem, services) {
@@ -90,8 +100,11 @@ function findMatchingService(lineItem, services) {
 
   if (catalogObjectId) {
     const byCatalogId = services.find(
-      (service) => service.square_catalog_object_id && service.square_catalog_object_id === catalogObjectId
+      (service) =>
+        service.square_catalog_object_id &&
+        service.square_catalog_object_id === catalogObjectId
     );
+
     if (byCatalogId) return byCatalogId;
   }
 
@@ -99,6 +112,7 @@ function findMatchingService(lineItem, services) {
     const byName = services.find(
       (service) => normalizeText(service.service_name) === lineName
     );
+
     if (byName) return byName;
   }
 
@@ -108,7 +122,8 @@ function findMatchingService(lineItem, services) {
 export async function POST(request) {
   try {
     const rawBody = await request.text();
-    const signatureHeader = request.headers.get("x-square-hmacsha256-signature") || "";
+    const signatureHeader =
+      request.headers.get("x-square-hmacsha256-signature") || "";
 
     const isValid = await WebhooksHelper.verifySignature({
       requestBody: rawBody,
@@ -118,7 +133,10 @@ export async function POST(request) {
     });
 
     if (!isValid) {
-      return NextResponse.json({ ok: false, error: "Invalid signature" }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: "Invalid signature" },
+        { status: 403 }
+      );
     }
 
     const payload = JSON.parse(rawBody);
@@ -126,27 +144,48 @@ export async function POST(request) {
     const payment = payload?.data?.object?.payment;
 
     if (eventType !== "payment.updated") {
-      return NextResponse.json({ ok: true, skipped: true, reason: "Unhandled event type" });
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        reason: "Unhandled event type",
+      });
     }
 
     if (!payment || payment.status !== "COMPLETED") {
-      return NextResponse.json({ ok: true, skipped: true, reason: "Payment not completed" });
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        reason: "Payment not completed",
+      });
     }
 
     const squarePaymentId = payment.id;
     const squareOrderId = payment.order_id;
 
     if (!squarePaymentId) {
-      return NextResponse.json({ ok: true, skipped: true, reason: "Missing payment id" });
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        reason: "Missing payment id",
+      });
     }
 
     if (await alreadyProcessed(squarePaymentId)) {
-      return NextResponse.json({ ok: true, skipped: true, reason: "Already processed" });
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        reason: "Already processed",
+      });
     }
 
     if (!squareOrderId) {
       await markProcessed(squarePaymentId, null, payload);
-      return NextResponse.json({ ok: true, skipped: true, reason: "No order_id on payment" });
+
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        reason: "No order_id on payment",
+      });
     }
 
     const order = await getSquareOrder(squareOrderId);
@@ -154,7 +193,12 @@ export async function POST(request) {
 
     if (!lineItems.length) {
       await markProcessed(squarePaymentId, squareOrderId, payload);
-      return NextResponse.json({ ok: true, skipped: true, reason: "No line items on order" });
+
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        reason: "No line items on order",
+      });
     }
 
     const services = await loadServices();
@@ -172,6 +216,7 @@ export async function POST(request) {
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Square webhook error:", error);
+
     return NextResponse.json(
       { ok: false, error: error.message || "Webhook failed" },
       { status: 500 }
